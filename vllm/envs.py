@@ -108,7 +108,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_USE_AITER_MOE: bool = True
     VLLM_ROCM_USE_AITER_RMSNORM: bool = True
     VLLM_ROCM_USE_AITER_MLA: bool = True
-    VLLM_ROCM_USE_AITER_MHA: bool = True
+    VLLM_ROCM_USE_AITER_MHA: bool = False
     VLLM_ROCM_USE_AITER_FP4_ASM_GEMM: bool = False
     VLLM_ROCM_USE_TRITON_ROPE: bool = False
     VLLM_ROCM_USE_AITER_FP8BMM: bool = True
@@ -893,7 +893,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Whether to use aiter mha ops.
     # By default is enabled.
     "VLLM_ROCM_USE_AITER_MHA": lambda: (
-        os.getenv("VLLM_ROCM_USE_AITER_MHA", "True").lower() in ("true", "1")
+        os.getenv("VLLM_ROCM_USE_AITER_MHA", "False").lower() in ("true", "1")
     ),
     # Whether to use aiter fp4 gemm asm.
     # By default is disabled.
