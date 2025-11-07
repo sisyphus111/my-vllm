@@ -1351,6 +1351,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, IntermediateTensors]:
+        log_file = "/tmp/native_vllm_gpu_model_runner_execute_model_timing.log"
+        t0 = time.time()
         self._update_states(scheduler_output)
         if not scheduler_output.total_num_scheduled_tokens:
             if not has_kv_transfer_group():
@@ -1364,6 +1366,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
          spec_decode_metadata, num_scheduled_tokens_np,
          spec_decode_common_attn_metadata) = (
              self._prepare_inputs(scheduler_output))
+
+        t1 = time.time()
+
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         if (self.use_cuda_graph
                 and num_scheduled_tokens <= self.cudagraph_batch_sizes[-1]):
@@ -1431,6 +1436,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             intermediate_tensors = self.sync_and_slice_intermediate_tensors(
                 num_input_tokens, intermediate_tensors, True)
 
+        t2 = time.time()
+
         # Some attention backends only support CUDA Graphs in pure decode.
         # If attention doesn't support CUDA Graphs for this batch, but we
         # compiled with full CUDA graphs, we have to skip them entirely.
@@ -1462,6 +1469,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             finished_sending, finished_recving = (
                 self.get_finished_kv_transfers(scheduler_output))
 
+        t3 = time.time()
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = model_output
         else:
@@ -1540,6 +1548,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             )
             sampler_output.sampled_token_ids = output_token_ids
 
+        t4 = time.time()
+
         num_nans_in_logits = {}
         if envs.VLLM_COMPUTE_NANS_IN_LOGITS:
             num_nans_in_logits = self._get_nans_in_logits(logits)
@@ -1577,15 +1587,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Get the valid generated tokens.
         sampled_token_ids = sampler_output.sampled_token_ids
         max_gen_len = sampled_token_ids.shape[-1]
+
+        t_start = time.time()
         if max_gen_len == 1:
             # No spec decode tokens.
-            valid_sampled_token_ids = sampled_token_ids.tolist()
+            valid_sampled_token_ids = sampled_token_ids.cpu().tolist()
         else:
+            assert False
             # Includes spec decode tokens.
             valid_sampled_token_ids = self.rejection_sampler.parse_output(
                 sampled_token_ids,
                 self.input_batch.vocab_size,
             )
+        t_end = time.time()
+
         # Mask out the sampled tokens that should not be sampled.
         for i in discard_sampled_tokens_req_indices:
             valid_sampled_token_ids[i].clear()
@@ -1618,6 +1633,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # Speculative decoding is not enabled.
             spec_token_ids = None
         else:
+            assert False
             assert spec_decode_common_attn_metadata is not None
             spec_token_ids = self.propose_draft_token_ids(
                 scheduler_output,
@@ -1630,7 +1646,26 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 spec_decode_common_attn_metadata,
             )
 
+        t5 = time.time()
         self.eplb_step()
+
+        t6 = time.time()
+
+        try:
+            with open(log_file, "a") as f:
+                f.write(
+                    "execute_model ms | "
+                    f"Total: {(t6 - t0) * 1000:.3f} | "
+                    f"PrepareInputs: {(t1 - t0) * 1000:.3f} | "
+                    f"BatchSetup: {(t2 - t1) * 1000:.3f} | "
+                    f"Forward: {(t3 - t2) * 1000:.3f} | "
+                    f"Sample: {(t4 - t3) * 1000:.3f} | "
+                    f"Finalize: {(t5 - t4) * 1000:.3f} | "
+                    f"EPLB: {(t6 - t5) * 1000:.3f}\n"
+                    f"ParseOutput: {(t_end - t_start) * 1000:.3f}\n"
+                )
+        except Exception:
+            pass
 
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
